@@ -1,41 +1,24 @@
 #include "keyboard.h"
 #include "math.h"
 #include "memory.h"
-#include "modes.h"
 #include "screen.h"
 #include "string.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
-
-#include "modes.c"
 
 static void shutdown_tty(void)
 {
     keyboard_shutdown();
 }
 
-static char *g_cur = 0;
-static char *g_next = 0;
-static char *g_blk_a = 0;
-static char *g_blk_b = 0;
+static char *g_grid = 0;
+static char *g_staging = 0;
 static int g_w = 0;
 static int g_h = 0;
 static int g_cursor_x = 0;
 static int g_cursor_y = 0;
-static int g_running = 0;
 static int g_generation = 0;
-static int g_frame_delay_us = 120000;
-static unsigned int g_prng = 2463534242u;
-
-static unsigned int prng_next(void)
-{
-    g_prng ^= g_prng << 13;
-    g_prng ^= g_prng >> 17;
-    g_prng ^= g_prng << 5;
-    return g_prng;
-}
 
 static int terminal_size(int *rows, int *cols)
 {
@@ -52,7 +35,7 @@ static int terminal_size(int *rows, int *cols)
 
 static int derive_grid_size(int term_rows, int term_cols, int *gw, int *gh)
 {
-    int reserve_rows = 4;
+    int reserve_rows = 6;
     int reserve_cols = 2;
     int w = term_cols - reserve_cols;
     int h = term_rows - reserve_rows;
@@ -71,45 +54,89 @@ static void cells_zero(char *p, int n)
     }
 }
 
-static int grid_buffers_alloc(int w, int h)
+static void grid_free(void)
+{
+    if (g_grid) {
+        memory_dealloc(g_grid);
+        g_grid = 0;
+    }
+    if (g_staging) {
+        memory_dealloc(g_staging);
+        g_staging = 0;
+    }
+    g_w = 0;
+    g_h = 0;
+}
+
+static int grid_alloc(int w, int h)
 {
     unsigned long need = (unsigned long)w * (unsigned long)h;
-    char *a;
-    char *b;
-    char *old_a = g_blk_a;
-    char *old_b = g_blk_b;
-    a = memory_alloc(need);
-    b = memory_alloc(need);
-    if (!a || !b) {
-        if (a) {
-            memory_dealloc(a);
+    char *p;
+    char *q;
+
+    if (w <= 0 || h <= 0) {
+        return 0;
+    }
+    p = memory_alloc(need);
+    q = memory_alloc(need);
+    if (!p || !q) {
+        if (p) {
+            memory_dealloc(p);
         }
-        if (b) {
-            memory_dealloc(b);
+        if (q) {
+            memory_dealloc(q);
         }
         return 0;
     }
-    cells_zero(a, math_imul(w, h));
-    cells_zero(b, math_imul(w, h));
-    if (old_a) {
-        memory_dealloc(old_a);
-    }
-    if (old_b) {
-        memory_dealloc(old_b);
-    }
-    g_blk_a = a;
-    g_blk_b = b;
-    g_cur = a;
-    g_next = b;
+    grid_free();
+    g_grid = p;
+    g_staging = q;
     g_w = w;
     g_h = h;
+    cells_zero(g_grid, math_imul(w, h));
+    cells_zero(g_staging, math_imul(w, h));
     g_cursor_x = math_idiv(w, 2);
     g_cursor_y = math_idiv(h, 2);
     g_generation = 0;
     return 1;
 }
 
-static int count_neighbors(int x, int y)
+static void stamp_live(int px, int py)
+{
+    int wx = math_wrap_index(px, g_w);
+    int wy = math_wrap_index(py, g_h);
+    g_grid[math_imul(wy, g_w) + wx] = 1;
+}
+
+/* Classic glider shape, centered on the board. */
+static void stamp_static_glider(void)
+{
+    int ax = math_idiv(g_w, 2) - 1;
+    int ay = math_idiv(g_h, 2) - 1;
+    stamp_live(ax + 1, ay + 0);
+    stamp_live(ax + 2, ay + 1);
+    stamp_live(ax + 0, ay + 2);
+    stamp_live(ax + 1, ay + 2);
+    stamp_live(ax + 2, ay + 2);
+}
+
+/* Paint a square around the cursor (only in-bounds cells). rad 1 => 3x3. */
+static void paint_cursor_block(int alive, int rad)
+{
+    int dx;
+    int dy;
+    for (dy = -rad; dy <= rad; dy++) {
+        for (dx = -rad; dx <= rad; dx++) {
+            int x = g_cursor_x + dx;
+            int y = g_cursor_y + dy;
+            if (math_in_bounds(x, y, g_w, g_h)) {
+                g_grid[math_imul(y, g_w) + x] = (char)(alive ? 1 : 0);
+            }
+        }
+    }
+}
+
+static int count_live_neighbors(int x, int y)
 {
     int dx;
     int dy;
@@ -123,7 +150,7 @@ static int count_neighbors(int x, int y)
             }
             nx = math_wrap_index(x + dx, g_w);
             ny = math_wrap_index(y + dy, g_h);
-            if (g_cur[math_imul(ny, g_w) + nx]) {
+            if (g_grid[math_imul(ny, g_w) + nx]) {
                 c++;
             }
         }
@@ -131,70 +158,60 @@ static int count_neighbors(int x, int y)
     return c;
 }
 
-static void step_once(void)
+/*
+ * One Conway generation on a torus: live survives iff 2 or 3 neighbors;
+ * dead becomes live iff exactly 3 neighbors; else dead.
+ */
+static void step_conway_once(void)
 {
     int x;
     int y;
     for (y = 0; y < g_h; y++) {
         for (x = 0; x < g_w; x++) {
             int idx = math_imul(y, g_w) + x;
-            int n = count_neighbors(x, y);
-            if (g_cur[idx]) {
-                g_next[idx] = (char)((n == 2 || n == 3) ? 1 : 0);
+            int n = count_live_neighbors(x, y);
+            int alive;
+            if (g_grid[idx]) {
+                alive = (n == 2 || n == 3) ? 1 : 0;
             } else {
-                g_next[idx] = (char)(n == 3 ? 1 : 0);
+                alive = (n == 3) ? 1 : 0;
             }
+            g_staging[idx] = (char)alive;
         }
     }
     {
-        char *t = g_cur;
-        g_cur = g_next;
-        g_next = t;
+        char *t = g_grid;
+        g_grid = g_staging;
+        g_staging = t;
     }
     g_generation++;
-}
-
-static void randomize_field(int density_permille)
-{
-    int x;
-    int y;
-    int d = math_clamp(density_permille, 50, 400);
-    for (y = 0; y < g_h; y++) {
-        for (x = 0; x < g_w; x++) {
-            unsigned int u = prng_next() & 1023u;
-            g_cur[math_imul(y, g_w) + x] = (char)(u < (unsigned int)d ? 1 : 0);
-        }
-    }
-    g_generation = 0;
-}
-
-static void clear_field(void)
-{
-    cells_zero(g_cur, math_imul(g_w, g_h));
-    g_generation = 0;
 }
 
 static void draw_frame(void)
 {
     int x;
     int y;
+    char xbuf[32];
+    char ybuf[32];
     char genbuf[32];
     screen_clear();
     screen_cursor(0, 0);
-    screen_puts("C capstone Game of Life | Enter run  P pause  Space toggle  WASD move  R random  C clear");
-    screen_puts(" | 0-9 presets  F/Z  +/-  : cmd  Q  | modes: gun pulse gates cpu");
-    screen_cursor(0, 2);
+    screen_puts("Conway (torus) | WASD Space B K C Q | Enter: one generation");
+    screen_cursor(0, 1);
+    screen_puts("cursor ");
+    str_from_int(g_cursor_x, xbuf, 32);
+    str_from_int(g_cursor_y, ybuf, 32);
+    screen_puts(xbuf);
+    screen_puts(",");
+    screen_puts(ybuf);
+    screen_puts("  gen ");
     str_from_int(g_generation, genbuf, 32);
-    screen_puts("Gen: ");
     screen_puts(genbuf);
-    screen_puts(g_running ? "  RUN" : "  EDIT");
-    screen_cursor(0, 3);
+    screen_cursor(0, 4);
     for (y = 0; y < g_h; y++) {
         for (x = 0; x < g_w; x++) {
-            int on = g_cur[math_imul(y, g_w) + x];
-            int cx = g_cursor_x;
-            int cy = g_cursor_y;
-            if (!g_running && x == cx && y == cy) {
+            int on = g_grid[math_imul(y, g_w) + x];
+            if (x == g_cursor_x && y == g_cursor_y) {
                 screen_putc(on ? '@' : '+');
             } else {
                 screen_putc(on ? '#' : '.');
@@ -205,189 +222,94 @@ static void draw_frame(void)
     screen_flush();
 }
 
-static void handle_command_line(void)
-{
-    char line[128];
-    char *toks[8];
-    int n;
-    int i;
-    screen_cursor(0, math_min(g_h + 4, 40));
-    screen_puts("Cmd: ");
-    screen_flush();
-    keyboard_read_line(line, 128);
-    n = str_split_inplace(line, ' ', toks, 8);
-    for (i = 0; i < n; i++) {
-        if (str_cmp(toks[i], "") == 0) {
-            continue;
-        }
-        if (str_cmp(toks[i], "quit") == 0 || str_cmp(toks[i], "q") == 0) {
-            exit(0);
-        }
-        if (str_cmp(toks[i], "help") == 0) {
-            screen_cursor(0, math_min(g_h + 5, 42));
-            screen_puts("Commands: help quit random clear faster slower (keys F/Z)");
-            screen_flush();
-            usleep(800000);
-            return;
-        }
-        if (str_cmp(toks[i], "random") == 0) {
-            randomize_field(180);
-            return;
-        }
-        if (str_cmp(toks[i], "clear") == 0) {
-            clear_field();
-            return;
-        }
-        if (str_cmp(toks[i], "faster") == 0) {
-            g_frame_delay_us = math_max(10000, g_frame_delay_us - 15000);
-            return;
-        }
-        if (str_cmp(toks[i], "slower") == 0) {
-            g_frame_delay_us = math_min(500000, g_frame_delay_us + 15000);
-            return;
-        }
-        return;
-    }
-}
-
-static int try_resize(int delta)
-{
-    int tr;
-    int tc;
-    int nw;
-    int nh;
-    terminal_size(&tr, &tc);
-    derive_grid_size(tr, tc, &nw, &nh);
-    nw = math_clamp(nw + delta, 12, 200);
-    nh = math_clamp(nh + delta, 6, 60);
-    return grid_buffers_alloc(nw, nh);
-}
-
 static void handle_key(char ch)
 {
-    if (!g_running && ch >= '0' && ch <= '9') {
-        pattern_load_preset(g_cur, g_w, g_h, ch - '0');
-        g_generation = 0;
-        return;
-    }
-    if (ch == ':') {
-        handle_command_line();
-        return;
-    }
     if (ch == 'q' || ch == 'Q') {
+        grid_free();
         exit(0);
     }
-    if (ch == '\r' || ch == '\n') {
-        g_running = 1;
-        return;
-    }
-    if (ch == 'p' || ch == 'P') {
-        g_running = 0;
-        return;
-    }
     if (ch == ' ') {
-        if (!g_running && math_in_bounds(g_cursor_x, g_cursor_y, g_w, g_h)) {
+        if (math_in_bounds(g_cursor_x, g_cursor_y, g_w, g_h)) {
             int idx = math_imul(g_cursor_y, g_w) + g_cursor_x;
-            g_cur[idx] = (char)(g_cur[idx] ? 0 : 1);
-        } else {
-            g_running = 0;
+            g_grid[idx] = (char)(g_grid[idx] ? 0 : 1);
         }
         return;
     }
-    if (!g_running) {
-        if (ch == 'w' || ch == 'W') {
-            if (math_in_bounds(g_cursor_x, g_cursor_y - 1, g_w, g_h)) {
-                g_cursor_y--;
-            }
-            return;
-        }
-        if (ch == 's' || ch == 'S') {
-            if (math_in_bounds(g_cursor_x, g_cursor_y + 1, g_w, g_h)) {
-                g_cursor_y++;
-            }
-            return;
-        }
-        if (ch == 'a' || ch == 'A') {
-            if (math_in_bounds(g_cursor_x - 1, g_cursor_y, g_w, g_h)) {
-                g_cursor_x--;
-            }
-            return;
-        }
-        if (ch == 'd' || ch == 'D') {
-            if (math_in_bounds(g_cursor_x + 1, g_cursor_y, g_w, g_h)) {
-                g_cursor_x++;
-            }
-            return;
-        }
-    }
-    if (ch == 'r' || ch == 'R') {
-        randomize_field(180);
+    if (ch == '\r' || ch == '\n') {
+        step_conway_once();
         return;
     }
     if (ch == 'c' || ch == 'C') {
-        clear_field();
+        {
+            int n = math_imul(g_w, g_h);
+            cells_zero(g_grid, n);
+            if (g_staging) {
+                cells_zero(g_staging, n);
+            }
+            g_generation = 0;
+        }
         return;
     }
-    if (ch == 'f' || ch == 'F') {
-        g_frame_delay_us = math_max(10000, g_frame_delay_us - 15000);
+    if (ch == 'b' || ch == 'B') {
+        paint_cursor_block(1, 1);
         return;
     }
-    if (g_running && (ch == 'z' || ch == 'Z')) {
-        g_frame_delay_us = math_min(500000, g_frame_delay_us + 15000);
+    if (ch == 'k' || ch == 'K') {
+        paint_cursor_block(0, 1);
         return;
     }
-    if (ch == '+') {
-        try_resize(2);
+    if (ch == 'w' || ch == 'W') {
+        if (math_in_bounds(g_cursor_x, g_cursor_y - 1, g_w, g_h)) {
+            g_cursor_y--;
+        }
         return;
     }
-    if (ch == '-') {
-        try_resize(-2);
+    if (ch == 's' || ch == 'S') {
+        if (math_in_bounds(g_cursor_x, g_cursor_y + 1, g_w, g_h)) {
+            g_cursor_y++;
+        }
+        return;
+    }
+    if (ch == 'a' || ch == 'A') {
+        if (math_in_bounds(g_cursor_x - 1, g_cursor_y, g_w, g_h)) {
+            g_cursor_x--;
+        }
+        return;
+    }
+    if (ch == 'd' || ch == 'D') {
+        if (math_in_bounds(g_cursor_x + 1, g_cursor_y, g_w, g_h)) {
+            g_cursor_x++;
+        }
         return;
     }
 }
 
-int main(int argc, char **argv)
+int main(void)
 {
     int tr;
     int tc;
     int gw;
     int gh;
-    int tick = 0;
+
     memory_init();
-    g_prng ^= (unsigned int)getpid();
     terminal_size(&tr, &tc);
     derive_grid_size(tr, tc, &gw, &gh);
-    if (!grid_buffers_alloc(gw, gh)) {
+    if (!grid_alloc(gw, gh)) {
         return 1;
     }
+    stamp_static_glider();
     keyboard_init();
     if (atexit(shutdown_tty) != 0) {
+        grid_free();
         keyboard_shutdown();
         return 1;
-    }
-    {
-        ModesStartupKind sk = modes_parse_startup(argc, argv);
-        if (sk == MODES_START_RANDOM) {
-            randomize_field(160);
-        } else {
-            modes_apply_startup(g_cur, g_w, g_h, sk);
-        }
     }
     while (1) {
         char ch;
         while (keyboard_key_pressed(&ch)) {
             handle_key(ch);
         }
-        if (g_running) {
-            tick++;
-            if (tick >= 2) {
-                tick = 0;
-                step_once();
-            }
-        } else {
-            tick = 0;
-        }
         draw_frame();
-        usleep((unsigned int)g_frame_delay_us);
+        usleep(80000);
     }
 }

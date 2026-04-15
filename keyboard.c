@@ -1,5 +1,4 @@
 #include "keyboard.h"
-#include <stdio.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -41,37 +40,4 @@ int keyboard_key_pressed(char *out)
         return 1;
     }
     return 0;
-}
-
-void keyboard_read_line(char *buf, unsigned long cap)
-{
-    struct termios cooked;
-    unsigned long i;
-    int ch;
-    if (!buf || cap == 0) {
-        return;
-    }
-    if (g_tty_saved) {
-        tcsetattr(STDIN_FILENO, TCSANOW, &g_saved_termios);
-    }
-    i = 0;
-    while (i + 1 < cap) {
-        ch = getchar();
-        if (ch == EOF) {
-            break;
-        }
-        if (ch == '\n' || ch == '\r') {
-            break;
-        }
-        buf[i] = (char)ch;
-        i++;
-    }
-    buf[i] = '\0';
-    if (g_tty_saved) {
-        cooked = g_saved_termios;
-        cooked.c_lflag &= (tcflag_t)~(ICANON | ECHO);
-        cooked.c_cc[VMIN] = 0;
-        cooked.c_cc[VTIME] = 0;
-        tcsetattr(STDIN_FILENO, TCSANOW, &cooked);
-    }
 }

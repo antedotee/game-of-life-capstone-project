@@ -3,10 +3,7 @@
 
 int math_imul(int a, int b);
 int math_idiv(int a, int b);
-int math_imod(int a, int b);
-int math_iabs(int x);
-int math_min(int a, int b);
-int math_max(int a, int b);
+int math_imod(int a, int m);
 int math_clamp(int v, int lo, int hi);
 int math_wrap_index(int idx, int len);
 int math_in_bounds(int x, int y, int w, int h);

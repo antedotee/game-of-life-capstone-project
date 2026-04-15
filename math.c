@@ -1,13 +1,5 @@
 #include "math.h"
 
-int math_iabs(int x)
-{
-    if (x < 0) {
-        return -x;
-    }
-    return x;
-}
-
 int math_imul(int a, int b)
 {
     int neg = 0;
@@ -59,22 +51,6 @@ int math_imod(int a, int m)
     }
     int q = math_idiv(a, m);
     return a - math_imul(q, m);
-}
-
-int math_min(int a, int b)
-{
-    if (a < b) {
-        return a;
-    }
-    return b;
-}
-
-int math_max(int a, int b)
-{
-    if (a > b) {
-        return a;
-    }
-    return b;
 }
 
 int math_clamp(int v, int lo, int hi)

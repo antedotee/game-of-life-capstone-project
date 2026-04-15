@@ -19,6 +19,8 @@ static int g_h = 0;
 static int g_cursor_x = 0;
 static int g_cursor_y = 0;
 static int g_generation = 0;
+/* Arrow keys send escape sequences; 0 idle, 1 saw ESC, 2 saw ESC [, 3 saw ESC O */
+static int g_esc_seq;
 
 static int terminal_size(int *rows, int *cols)
 {
@@ -212,7 +214,8 @@ static void draw_frame(void)
         for (x = 0; x < g_w; x++) {
             int on = g_grid[math_imul(y, g_w) + x];
             if (x == g_cursor_x && y == g_cursor_y) {
-                screen_putc(on ? '@' : '+');
+                /* live uses same '#' as rest of board; '+' marks cursor on dead */
+                screen_putc(on ? '#' : '+');
             } else {
                 screen_putc(on ? '#' : '.');
             }
@@ -284,6 +287,82 @@ static void handle_key(char ch)
     }
 }
 
+/* CSI / SS3 arrows: ESC [ A|B|C|D or ESC O A|B|C|D — same moves as WASD */
+static void handle_csi_arrow(char c)
+{
+    switch (c) {
+    case 'A':
+        handle_key('w');
+        break;
+    case 'B':
+        handle_key('s');
+        break;
+    case 'C':
+        handle_key('d');
+        break;
+    case 'D':
+        handle_key('a');
+        break;
+    default:
+        break;
+    }
+}
+
+static void feed_input(char ch)
+{
+    if (g_esc_seq == 0) {
+        if (ch == '\033') {
+            g_esc_seq = 1;
+            return;
+        }
+        handle_key(ch);
+        return;
+    }
+    if (g_esc_seq == 1) {
+        if (ch == '[') {
+            g_esc_seq = 2;
+            return;
+        }
+        if (ch == 'O') {
+            g_esc_seq = 3;
+            return;
+        }
+        g_esc_seq = 0;
+        if (ch == '\033') {
+            g_esc_seq = 1;
+        } else {
+            handle_key(ch);
+        }
+        return;
+    }
+    if (g_esc_seq == 2) {
+        g_esc_seq = 0;
+        if (ch >= 'A' && ch <= 'D') {
+            handle_csi_arrow(ch);
+            return;
+        }
+        if (ch == '\033') {
+            g_esc_seq = 1;
+        } else {
+            handle_key(ch);
+        }
+        return;
+    }
+    if (g_esc_seq == 3) {
+        g_esc_seq = 0;
+        if (ch >= 'A' && ch <= 'D') {
+            handle_csi_arrow(ch);
+            return;
+        }
+        if (ch == '\033') {
+            g_esc_seq = 1;
+        } else {
+            handle_key(ch);
+        }
+        return;
+    }
+}
+
 int main(void)
 {
     int tr;
@@ -307,7 +386,7 @@ int main(void)
     while (1) {
         char ch;
         while (keyboard_key_pressed(&ch)) {
-            handle_key(ch);
+            feed_input(ch);
         }
         draw_frame();
         usleep(80000);

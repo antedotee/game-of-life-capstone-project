@@ -41,3 +41,26 @@ int keyboard_key_pressed(char *out)
     }
     return 0;
 }
+
+int keyboard_read_line(char *out, unsigned long cap)
+{
+    unsigned long pos = 0;
+    unsigned char b;
+    ssize_t n;
+
+    if (!out || cap == 0) {
+        return 0;
+    }
+    while (pos + 1u < cap) {
+        n = read(STDIN_FILENO, &b, 1);
+        if (n != 1) {
+            break;
+        }
+        if (b == '\n' || b == '\r') {
+            break;
+        }
+        out[pos++] = (char)b;
+    }
+    out[pos] = '\0';
+    return (int)pos;
+}

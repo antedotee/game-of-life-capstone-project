@@ -14,6 +14,7 @@ static void shutdown_tty(void)
     keyboard_shutdown();
     screen_leave_app();
 }
+// Test comment
 
 static char *g_grid = 0;
 static char *g_staging = 0;

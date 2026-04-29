@@ -103,14 +103,6 @@ const LifePattern *life_find_pattern(const char *name)
     return 0;
 }
 
-int life_pattern_cell_count(const LifePattern *pattern)
-{
-    if (!pattern) {
-        return 0;
-    }
-    return pattern->cell_count;
-}
-
 void life_stamp_pattern(char *grid, int w, int h, const LifePattern *pattern, int origin_x, int origin_y)
 {
     int i;

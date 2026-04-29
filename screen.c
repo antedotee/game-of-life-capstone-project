@@ -51,11 +51,6 @@ void screen_hide_cursor(void)
     printf("\033[?25l");
 }
 
-void screen_show_cursor(void)
-{
-    printf("\033[?25h");
-}
-
 void screen_reset(void)
 {
     printf("\033[0m");
@@ -69,11 +64,6 @@ void screen_style_banner(void)
 void screen_style_hint(void)
 {
     printf("\033[38;2;140;150;175m");
-}
-
-void screen_style_dim(void)
-{
-    printf("\033[38;2;82;92;118m");
 }
 
 void screen_style_title(void)
@@ -116,11 +106,6 @@ void screen_style_cursor_cell(void)
     printf("\033[1m\033[38;2;255;220;90m");
 }
 
-void screen_style_cursor_blink(void)
-{
-    printf("\033[1m\033[38;2;255;255;255m");
-}
-
 void screen_style_border(void)
 {
     printf("\033[38;2;98;120;190m");
@@ -139,9 +124,4 @@ void screen_style_run(void)
 void screen_style_paused(void)
 {
     printf("\033[38;2;200;120;160m");
-}
-
-void screen_style_warning(void)
-{
-    printf("\033[1m\033[38;2;255;190;90m");
 }

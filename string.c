@@ -63,37 +63,6 @@ int str_compare(const char *a, const char *b)
     return 0;
 }
 
-int str_token_next(const char **cursor, char delim, char *out, unsigned long cap)
-{
-    const char *p;
-    unsigned long pos = 0;
-
-    if (!cursor || !*cursor || !out || cap == 0) {
-        return 0;
-    }
-    p = *cursor;
-    while (*p == delim) {
-        p++;
-    }
-    if (*p == '\0') {
-        out[0] = '\0';
-        *cursor = p;
-        return 0;
-    }
-    while (*p != '\0' && *p != delim) {
-        if (pos + 1u < cap) {
-            out[pos++] = *p;
-        }
-        p++;
-    }
-    out[pos] = '\0';
-    if (*p == delim) {
-        p++;
-    }
-    *cursor = p;
-    return 1;
-}
-
 void str_from_int(int value, char *buf, unsigned long cap)
 {
     unsigned long pos = 0;

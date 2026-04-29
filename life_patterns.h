@@ -18,7 +18,6 @@ typedef struct LifePattern {
 int life_pattern_count(void);
 const LifePattern *life_pattern_at(int index);
 const LifePattern *life_find_pattern(const char *name);
-int life_pattern_cell_count(const LifePattern *pattern);
 void life_stamp_pattern(char *grid, int w, int h, const LifePattern *pattern, int origin_x, int origin_y);
 
 #endif
